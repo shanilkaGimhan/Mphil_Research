@@ -1,0 +1,241 @@
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:31.409198Z","iopub.execute_input":"2023-06-02T02:36:31.409949Z","iopub.status.idle":"2023-06-02T02:36:38.957800Z","shell.execute_reply.started":"2023-06-02T02:36:31.409831Z","shell.execute_reply":"2023-06-02T02:36:38.956780Z"}}
+import tensorflow as tf 
+from tensorflow import keras
+from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Activation, ReLU
+from tensorflow.keras.layers import BatchNormalization, Conv2DTranspose, Concatenate
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.optimizers import *
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:38.961364Z","iopub.execute_input":"2023-06-02T02:36:38.962806Z","iopub.status.idle":"2023-06-02T02:36:38.970598Z","shell.execute_reply.started":"2023-06-02T02:36:38.962768Z","shell.execute_reply":"2023-06-02T02:36:38.969272Z"}}
+#Function to create single downsampling block
+def downsampling_block(input_for_block,filters=64):
+    #convolutional layer 1
+    conv_layer_down1 = Conv2D(filters, kernel_size = (3,3), padding = "same")(input_for_block)
+    batch_normalization_down1 = BatchNormalization()(conv_layer_down1)
+    activation_down1 = ReLU()(batch_normalization_down1)
+    #convolutional layer 2
+    conv_layer_down2 = Conv2D(filters, kernel_size = (3,3), padding = "same")(activation_down1)
+    batch_normalization_down2 = BatchNormalization()(conv_layer_down2)
+    activation_down2 = ReLU()(batch_normalization_down2)
+    #maxpooling layer
+    MaxPool_layer_down1 = MaxPooling2D(strides = (2,2))(activation_down2)
+    #return one downsampling block
+    return activation_down2,MaxPool_layer_down1
+    
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:38.973054Z","iopub.execute_input":"2023-06-02T02:36:38.973860Z","iopub.status.idle":"2023-06-02T02:36:38.983590Z","shell.execute_reply.started":"2023-06-02T02:36:38.973823Z","shell.execute_reply":"2023-06-02T02:36:38.982562Z"}}
+def upsampling_block(input_for_block, copy_crop, filters=64):
+    #Transpose convolutional layer for upsampling
+    Upsample_layer = Conv2DTranspose(filters, (2, 2), strides=2, padding="same")(input_for_block)
+    Connector = Concatenate()([Upsample_layer, copy_crop])
+     #convolutional layer 1
+    conv_layer_up1 = Conv2D(filters, kernel_size = (3,3), padding = "same")(Connector)
+    batch_normalization_up1 = BatchNormalization()(conv_layer_up1)
+    activation_up1 = ReLU()(batch_normalization_up1)
+    #convolutional layer 2
+    conv_layer_up2 = Conv2D(filters, kernel_size = (3,3), padding = "same")(activation_up1)
+    batch_normalization_up2 = BatchNormalization()(conv_layer_up2)
+    activation_up2 = ReLU()(batch_normalization_up2)
+    #return upsampling block
+    return activation_up2
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:38.985193Z","iopub.execute_input":"2023-06-02T02:36:38.985610Z","iopub.status.idle":"2023-06-02T02:36:41.898614Z","shell.execute_reply.started":"2023-06-02T02:36:38.985576Z","shell.execute_reply":"2023-06-02T02:36:41.897420Z"}}
+#building UNet model
+input_shape = (512, 512, 3)
+input_layer= Input(input_shape)
+#creating the downsampling block
+copy_crop_1,down1=downsampling_block(input_layer,64)
+copy_crop_2,down2=downsampling_block(down1,64*2)
+copy_crop_3,down3=downsampling_block(down2,64*4)
+copy_crop_4,down4=downsampling_block(down3,64*8)
+#creating bottom layer
+conv_layer_bottom1 = Conv2D(64*16, kernel_size = (3,3), padding = "same")(down4)
+batch_normalization_bottom1 = BatchNormalization()(conv_layer_bottom1)
+activation_bottom1 = ReLU()(batch_normalization_bottom1)
+conv_layer_bottom2 = Conv2D(64*16, kernel_size = (3,3), padding = "same")(activation_bottom1)
+batch_normalization_bottom2 = BatchNormalization()(conv_layer_bottom2)
+activation_bottom2 = ReLU()(batch_normalization_bottom2)
+#creating upsampling block
+up1=upsampling_block(activation_bottom2,copy_crop_4,64*8)
+up2=upsampling_block(up1,copy_crop_3,64*4)
+up3=upsampling_block(up2,copy_crop_2,64*2)
+up4=upsampling_block(up3,copy_crop_1,64)
+#output layer
+output_layer = Conv2D(1, 1, padding="same", activation="sigmoid")(up4)
+model = Model(input_layer, output_layer)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:41.909020Z","iopub.execute_input":"2023-06-02T02:36:41.909333Z","iopub.status.idle":"2023-06-02T02:36:41.922482Z","shell.execute_reply.started":"2023-06-02T02:36:41.909306Z","shell.execute_reply":"2023-06-02T02:36:41.921436Z"}}
+#model.summary()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:36:41.927468Z","iopub.execute_input":"2023-06-02T02:36:41.929858Z","iopub.status.idle":"2023-06-02T02:36:42.097490Z","shell.execute_reply.started":"2023-06-02T02:36:41.929800Z","shell.execute_reply":"2023-06-02T02:36:42.096553Z"}}
+import glob
+import cv2
+import os
+import numpy as np
+from matplotlib import pyplot as plt
+tf.config.run_functions_eagerly(True)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:03.388413Z","iopub.execute_input":"2023-06-02T02:37:03.389569Z","iopub.status.idle":"2023-06-02T02:37:20.026258Z","shell.execute_reply.started":"2023-06-02T02:37:03.389521Z","shell.execute_reply":"2023-06-02T02:37:20.025211Z"}}
+SIZE_X = 512 
+SIZE_Y = 512
+image_names = glob.glob("/kaggle/input/newmanual/Image/*tif")
+image_names.sort()
+#print(image_names)
+images = [cv2.imread(image, 1) for image in image_names]
+images=[cv2.resize(image, (SIZE_Y, SIZE_X)) for image in images]
+train_images = np.array(images)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:20.028142Z","iopub.execute_input":"2023-06-02T02:37:20.028540Z","iopub.status.idle":"2023-06-02T02:37:22.468735Z","shell.execute_reply.started":"2023-06-02T02:37:20.028503Z","shell.execute_reply":"2023-06-02T02:37:22.467562Z"}}
+mask_names = glob.glob("/kaggle/input/newmanual/Mask/*.tif")
+mask_names.sort()
+#print(image_names)
+masks = [cv2.imread(mask, 0) for mask in mask_names]
+masks=[cv2.resize(mask, (SIZE_Y, SIZE_X)) for mask in masks]
+mask_dataset = np.array(masks)
+train_masks = np.array(mask_dataset)
+     
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:22.470358Z","iopub.execute_input":"2023-06-02T02:37:22.470743Z","iopub.status.idle":"2023-06-02T02:37:22.810955Z","shell.execute_reply.started":"2023-06-02T02:37:22.470705Z","shell.execute_reply":"2023-06-02T02:37:22.809874Z"}}
+X = train_images
+Y = train_masks
+Y = np.expand_dims(Y, axis=3)
+
+from sklearn.model_selection import train_test_split
+x_train, x_val, y_train, y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:22.814341Z","iopub.execute_input":"2023-06-02T02:37:22.814748Z","iopub.status.idle":"2023-06-02T02:37:23.224180Z","shell.execute_reply.started":"2023-06-02T02:37:22.814710Z","shell.execute_reply":"2023-06-02T02:37:23.223108Z"}}
+import random
+img_number = random.randint(0, len(train_images)-1)
+img = train_images[img_number]
+mask = train_masks[img_number]
+plt.figure(figsize=(12, 8))
+plt.subplot(221)
+plt.title('Image')
+plt.imshow(img)
+plt.subplot(222)
+plt.title('Mask')
+plt.imshow(mask)
+plt.show()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.225311Z","iopub.execute_input":"2023-06-02T02:37:23.226153Z","iopub.status.idle":"2023-06-02T02:37:23.231775Z","shell.execute_reply.started":"2023-06-02T02:37:23.226115Z","shell.execute_reply":"2023-06-02T02:37:23.230795Z"}}
+seed=24
+batch_size= 5
+from keras.preprocessing.image import ImageDataGenerator
+
+img_data_gen_args = dict(horizontal_flip=True,)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.233570Z","iopub.execute_input":"2023-06-02T02:37:23.234301Z","iopub.status.idle":"2023-06-02T02:37:23.242297Z","shell.execute_reply.started":"2023-06-02T02:37:23.234262Z","shell.execute_reply":"2023-06-02T02:37:23.241439Z"}}
+mask_data_gen_args = dict( horizontal_flip=True,
+                     preprocessing_function = lambda x: np.where(x>0, 1, 0).astype(x.dtype))
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.245444Z","iopub.execute_input":"2023-06-02T02:37:23.245907Z","iopub.status.idle":"2023-06-02T02:37:23.495561Z","shell.execute_reply.started":"2023-06-02T02:37:23.245857Z","shell.execute_reply":"2023-06-02T02:37:23.494261Z"}}
+image_data_generator = ImageDataGenerator(**img_data_gen_args)
+image_data_generator.fit(x_train, augment=True, seed=seed )
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.497438Z","iopub.execute_input":"2023-06-02T02:37:23.497851Z","iopub.status.idle":"2023-06-02T02:37:23.540856Z","shell.execute_reply.started":"2023-06-02T02:37:23.497813Z","shell.execute_reply":"2023-06-02T02:37:23.539967Z"}}
+image_generator = image_data_generator.flow(x_train, seed=seed,batch_size=batch_size)
+valid_img_generator = image_data_generator.flow(x_val, seed=seed,batch_size=batch_size)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.542427Z","iopub.execute_input":"2023-06-02T02:37:23.542818Z","iopub.status.idle":"2023-06-02T02:37:23.622745Z","shell.execute_reply.started":"2023-06-02T02:37:23.542783Z","shell.execute_reply":"2023-06-02T02:37:23.621705Z"}}
+mask_data_generator = ImageDataGenerator(**mask_data_gen_args)
+mask_data_generator.fit(y_train, augment=True, seed=seed)
+mask_generator = mask_data_generator.flow(y_train, seed=seed,batch_size=batch_size)
+valid_mask_generator = mask_data_generator.flow(y_val, seed=seed,batch_size=batch_size)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.627357Z","iopub.execute_input":"2023-06-02T02:37:23.627691Z","iopub.status.idle":"2023-06-02T02:37:23.635709Z","shell.execute_reply.started":"2023-06-02T02:37:23.627661Z","shell.execute_reply":"2023-06-02T02:37:23.633163Z"}}
+def my_image_mask_generator(image_generator, mask_generator):
+    train_generator = zip(image_generator, mask_generator)
+    for (img, mask) in train_generator:
+        yield (img, mask)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.639083Z","iopub.execute_input":"2023-06-02T02:37:23.639433Z","iopub.status.idle":"2023-06-02T02:37:23.645955Z","shell.execute_reply.started":"2023-06-02T02:37:23.639396Z","shell.execute_reply":"2023-06-02T02:37:23.644879Z"}}
+my_generator = my_image_mask_generator(image_generator, mask_generator)
+
+validation_datagen = my_image_mask_generator(valid_img_generator, valid_mask_generator)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.647497Z","iopub.execute_input":"2023-06-02T02:37:23.647918Z","iopub.status.idle":"2023-06-02T02:37:23.977036Z","shell.execute_reply.started":"2023-06-02T02:37:23.647870Z","shell.execute_reply":"2023-06-02T02:37:23.976073Z"}}
+x = image_generator.next()
+y = mask_generator.next()
+for i in range(0,1):
+    image = x[i]
+    mask = y[i]
+    plt.subplot(1,2,1)
+    plt.imshow(image[:,:,0], cmap='gray')
+    plt.subplot(1,2,2)
+    plt.imshow(mask[:,:,0])
+    plt.show()
+
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.978625Z","iopub.execute_input":"2023-06-02T02:37:23.979034Z","iopub.status.idle":"2023-06-02T02:37:23.984255Z","shell.execute_reply.started":"2023-06-02T02:37:23.978996Z","shell.execute_reply":"2023-06-02T02:37:23.982825Z"}}
+from keras import backend as K
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.986225Z","iopub.execute_input":"2023-06-02T02:37:23.986684Z","iopub.status.idle":"2023-06-02T02:37:23.995647Z","shell.execute_reply.started":"2023-06-02T02:37:23.986646Z","shell.execute_reply":"2023-06-02T02:37:23.994458Z"}}
+def jaccard_distance_loss(y_true, y_pred, smooth=100):
+    
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    sum_ = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    jac = (intersection + smooth) / (sum_ - intersection + smooth)
+    return (1 - jac) * smooth
+
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:23.997186Z","iopub.execute_input":"2023-06-02T02:37:23.997588Z","iopub.status.idle":"2023-06-02T02:37:24.008191Z","shell.execute_reply.started":"2023-06-02T02:37:23.997554Z","shell.execute_reply":"2023-06-02T02:37:24.007231Z"}}
+def dice_metric(y_pred, y_true):
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    union = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    # if y_pred.sum() == 0 and y_pred.sum() == 0:
+    #     return 1.0
+
+    return 2*intersection / union
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:24.009815Z","iopub.execute_input":"2023-06-02T02:37:24.010205Z","iopub.status.idle":"2023-06-02T02:37:24.028785Z","shell.execute_reply.started":"2023-06-02T02:37:24.010171Z","shell.execute_reply":"2023-06-02T02:37:24.027680Z"}}
+model.compile(optimizer=RMSprop(learning_rate=0.001), loss=jaccard_distance_loss, metrics=[dice_metric])
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:37:24.032008Z","iopub.execute_input":"2023-06-02T02:37:24.032966Z","iopub.status.idle":"2023-06-02T03:18:46.112548Z","shell.execute_reply.started":"2023-06-02T02:37:24.032903Z","shell.execute_reply":"2023-06-02T03:18:46.111444Z"}}
+history = model.fit(my_generator, validation_data=validation_datagen, steps_per_epoch=50, validation_steps=5, epochs=64)
+
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:18:46.114534Z","iopub.execute_input":"2023-06-02T03:18:46.114941Z","iopub.status.idle":"2023-06-02T03:18:46.405448Z","shell.execute_reply.started":"2023-06-02T03:18:46.114903Z","shell.execute_reply":"2023-06-02T03:18:46.404382Z"}}
+model.save_weights("weights(lr=0.0001,epoch=100).h5")
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:18:46.406833Z","iopub.execute_input":"2023-06-02T03:18:46.407940Z","iopub.status.idle":"2023-06-02T03:18:46.640435Z","shell.execute_reply.started":"2023-06-02T03:18:46.407900Z","shell.execute_reply":"2023-06-02T03:18:46.639314Z"}}
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = range(1, len(loss) + 1)
+plt.plot(epochs, loss, 'y', label='Training loss')
+plt.plot(epochs, val_loss, 'r', label='Validation loss')
+plt.title('Training and validation loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:18:46.641916Z","iopub.execute_input":"2023-06-02T03:18:46.642293Z","iopub.status.idle":"2023-06-02T03:18:46.882430Z","shell.execute_reply.started":"2023-06-02T03:18:46.642253Z","shell.execute_reply":"2023-06-02T03:18:46.881387Z"}}
+acc = history.history['dice_metric']
+#acc = history.history['accuracy']
+val_acc = history.history['val_dice_metric']
+#val_acc = history.history['val_accuracy']
+
+plt.plot(epochs, acc, 'y', label='Training Dice')
+plt.plot(epochs, val_acc, 'r', label='Validation Dice')
+plt.title('Training and validation Dice')
+plt.xlabel('Epochs')
+plt.ylabel('Dice')
+plt.legend()
+plt.show()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:21:08.417104Z","iopub.execute_input":"2023-06-02T03:21:08.417512Z","iopub.status.idle":"2023-06-02T03:21:08.791275Z","shell.execute_reply.started":"2023-06-02T03:21:08.417478Z","shell.execute_reply":"2023-06-02T03:21:08.790296Z"}}
+test_img = cv2.imread('/kaggle/input/newmanual/Image/Image_050.tif', cv2.IMREAD_COLOR)       
+test_img = cv2.resize(test_img, (512, 512))
+test_img = cv2.cvtColor(test_img, cv2.COLOR_RGB2BGR)
+plt.imshow(test_img, cmap='gray')
+test_img = np.expand_dims(test_img, axis=0)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:21:10.189728Z","iopub.execute_input":"2023-06-02T03:21:10.190736Z","iopub.status.idle":"2023-06-02T03:21:10.312995Z","shell.execute_reply.started":"2023-06-02T03:21:10.190687Z","shell.execute_reply":"2023-06-02T03:21:10.311920Z"}}
+#prediction = model.predict(test_img)
+prediction = (model.predict(test_img)[0,:,:,0] > 0.9).astype(np.uint8)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T03:21:11.269444Z","iopub.execute_input":"2023-06-02T03:21:11.270047Z","iopub.status.idle":"2023-06-02T03:21:11.537429Z","shell.execute_reply.started":"2023-06-02T03:21:11.270012Z","shell.execute_reply":"2023-06-02T03:21:11.536496Z"}}
+prediction_image = prediction.reshape(512,512)
+plt.imshow(prediction_image, cmap='gray')
+
+# %% [code]
