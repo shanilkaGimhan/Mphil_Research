@@ -1,0 +1,245 @@
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:09.287173Z","iopub.execute_input":"2023-06-02T02:05:09.287825Z","iopub.status.idle":"2023-06-02T02:05:26.450981Z","shell.execute_reply.started":"2023-06-02T02:05:09.287704Z","shell.execute_reply":"2023-06-02T02:05:26.449352Z"}}
+pip install segmentation_models
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:26.455066Z","iopub.execute_input":"2023-06-02T02:05:26.455423Z","iopub.status.idle":"2023-06-02T02:05:35.190895Z","shell.execute_reply.started":"2023-06-02T02:05:26.455388Z","shell.execute_reply":"2023-06-02T02:05:35.189602Z"}}
+import os
+import cv2
+import numpy as np
+from glob import glob
+from scipy.io import loadmat
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+tf.keras.backend.set_floatx('float64')
+from sklearn.model_selection import train_test_split
+import segmentation_models as sm
+sm.set_framework('tf.keras')
+sm.framework()
+BACKBONE = 'resnet34'
+preprocess_input = sm.get_preprocessing(BACKBONE)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:35.192715Z","iopub.execute_input":"2023-06-02T02:05:35.193927Z","iopub.status.idle":"2023-06-02T02:05:35.202348Z","shell.execute_reply.started":"2023-06-02T02:05:35.193877Z","shell.execute_reply":"2023-06-02T02:05:35.201093Z"}}
+def convolution_block(
+    block_input,
+    num_filters=256,
+    kernel_size=3,
+    dilation_rate=1,
+    padding="same",
+    
+    use_bias=False,
+):
+    x = layers.Conv2D(
+        num_filters,
+        kernel_size=kernel_size,
+        dilation_rate=dilation_rate,
+        padding="same",
+        use_bias=use_bias,
+        kernel_initializer=keras.initializers.HeNormal(),
+    )(block_input)
+    x = layers.BatchNormalization()(x)
+    return tf.nn.relu(x)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:35.206901Z","iopub.execute_input":"2023-06-02T02:05:35.207310Z","iopub.status.idle":"2023-06-02T02:05:35.220490Z","shell.execute_reply.started":"2023-06-02T02:05:35.207269Z","shell.execute_reply":"2023-06-02T02:05:35.219085Z"}}
+def DilatedSpatialPyramidPooling(dspp_input):
+    dims = dspp_input.shape
+    x = layers.AveragePooling2D(pool_size=(dims[-3], dims[-2]))(dspp_input)
+    x = convolution_block(x, kernel_size=1, use_bias=True)
+    out_pool = layers.UpSampling2D(
+        size=(dims[-3] // x.shape[1], dims[-2] // x.shape[2]), interpolation="bilinear",
+    )(x)
+
+    out_1 = convolution_block(dspp_input, kernel_size=1, dilation_rate=1)
+    out_6 = convolution_block(dspp_input, kernel_size=3, dilation_rate=6)
+    out_12 = convolution_block(dspp_input, kernel_size=3, dilation_rate=12)
+    out_18 = convolution_block(dspp_input, kernel_size=3, dilation_rate=18)
+
+    x = layers.Concatenate(axis=-1)([out_pool, out_1, out_6, out_12, out_18])
+    output = convolution_block(x, kernel_size=1)
+    return output
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:35.222230Z","iopub.execute_input":"2023-06-02T02:05:35.222734Z","iopub.status.idle":"2023-06-02T02:05:35.236050Z","shell.execute_reply.started":"2023-06-02T02:05:35.222678Z","shell.execute_reply":"2023-06-02T02:05:35.234649Z"}}
+def DeeplabV3Plus(image_size, num_classes):
+    model_input = keras.Input(shape=(image_size, image_size, 3))
+    resnet50 = keras.applications.ResNet50(
+        weights="imagenet", include_top=False, input_tensor=model_input
+    )
+    x = resnet50.get_layer("conv4_block6_2_relu").output
+    x = DilatedSpatialPyramidPooling(x)
+
+    input_a = layers.UpSampling2D(
+        size=(image_size // 4 // x.shape[1], image_size // 4 // x.shape[2]),
+        interpolation="bilinear",
+    )(x)
+    input_b = resnet50.get_layer("conv2_block3_2_relu").output
+    input_b = convolution_block(input_b, num_filters=48, kernel_size=1)
+
+    x = layers.Concatenate(axis=-1)([input_a, input_b])
+    x = convolution_block(x)
+    x = convolution_block(x)
+    x = layers.UpSampling2D(
+        size=(image_size // x.shape[1], image_size // x.shape[2]),
+        interpolation="bilinear",
+    )(x)
+    model_output = layers.Conv2D(num_classes, kernel_size=(1, 1), padding="same")(x)
+    return keras.Model(inputs=model_input, outputs=model_output)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:35.237673Z","iopub.execute_input":"2023-06-02T02:05:35.238171Z","iopub.status.idle":"2023-06-02T02:05:41.174220Z","shell.execute_reply.started":"2023-06-02T02:05:35.238127Z","shell.execute_reply":"2023-06-02T02:05:41.173052Z"}}
+model = DeeplabV3Plus(image_size=512, num_classes=1)
+#model.summary()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:41.176021Z","iopub.execute_input":"2023-06-02T02:05:41.176437Z","iopub.status.idle":"2023-06-02T02:05:41.182350Z","shell.execute_reply.started":"2023-06-02T02:05:41.176392Z","shell.execute_reply":"2023-06-02T02:05:41.181127Z"}}
+import glob
+import cv2
+import os
+import numpy as np
+from matplotlib import pyplot as plt
+tf.config.run_functions_eagerly(True)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:41.184060Z","iopub.execute_input":"2023-06-02T02:05:41.184777Z","iopub.status.idle":"2023-06-02T02:05:54.647676Z","shell.execute_reply.started":"2023-06-02T02:05:41.184735Z","shell.execute_reply":"2023-06-02T02:05:54.646268Z"}}
+SIZE_X = 512
+SIZE_Y = 512
+image_names = glob.glob("/kaggle/input/newmanual/Image/*.tif")
+image_names.sort()
+#print(image_names)
+images = [cv2.imread(image, 1) for image in image_names]
+images=[cv2.resize(image, (SIZE_Y, SIZE_X)) for image in images]
+train_images = np.array(images)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:54.649523Z","iopub.execute_input":"2023-06-02T02:05:54.649994Z","iopub.status.idle":"2023-06-02T02:05:57.090275Z","shell.execute_reply.started":"2023-06-02T02:05:54.649945Z","shell.execute_reply":"2023-06-02T02:05:57.089115Z"}}
+mask_names = glob.glob("/kaggle/input/newmanual/Mask/*.tif")
+mask_names.sort()
+#print(image_names)
+masks = [cv2.imread(mask, 0) for mask in mask_names]
+masks=[cv2.resize(mask, (SIZE_Y, SIZE_X)) for mask in masks]
+masks=[mask.astype(np.float32) for mask in masks]
+train_masks = np.array(masks)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:57.095731Z","iopub.execute_input":"2023-06-02T02:05:57.096199Z","iopub.status.idle":"2023-06-02T02:05:57.165547Z","shell.execute_reply.started":"2023-06-02T02:05:57.096150Z","shell.execute_reply":"2023-06-02T02:05:57.163995Z"}}
+X = train_images
+Y = train_masks
+Y = np.expand_dims(Y, axis=3)
+from sklearn.model_selection import train_test_split
+x_train, x_val, y_train, y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
+#x_train = preprocess_input(x_train)
+#x_val = preprocess_input(x_val)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:57.167186Z","iopub.execute_input":"2023-06-02T02:05:57.168249Z","iopub.status.idle":"2023-06-02T02:05:57.175525Z","shell.execute_reply.started":"2023-06-02T02:05:57.168203Z","shell.execute_reply":"2023-06-02T02:05:57.174001Z"}}
+seed=24
+batch_size= 2
+from keras.preprocessing.image import ImageDataGenerator
+
+img_data_gen_args = dict(horizontal_flip=True)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:57.177451Z","iopub.execute_input":"2023-06-02T02:05:57.179189Z","iopub.status.idle":"2023-06-02T02:05:57.187175Z","shell.execute_reply.started":"2023-06-02T02:05:57.179154Z","shell.execute_reply":"2023-06-02T02:05:57.186028Z"}}
+mask_data_gen_args = dict(horizontal_flip=True,
+                     preprocessing_function = lambda x: np.where(x>0, 1, 0).astype(x.dtype))
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:57.188916Z","iopub.execute_input":"2023-06-02T02:05:57.189460Z","iopub.status.idle":"2023-06-02T02:05:57.974445Z","shell.execute_reply.started":"2023-06-02T02:05:57.189417Z","shell.execute_reply":"2023-06-02T02:05:57.973331Z"}}
+image_data_generator = ImageDataGenerator(**img_data_gen_args)
+image_data_generator.fit(x_train, augment=True, seed=seed )
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:57.975926Z","iopub.execute_input":"2023-06-02T02:05:57.976353Z","iopub.status.idle":"2023-06-02T02:05:58.138609Z","shell.execute_reply.started":"2023-06-02T02:05:57.976306Z","shell.execute_reply":"2023-06-02T02:05:58.137408Z"}}
+image_generator = image_data_generator.flow(x_train, seed=seed,batch_size=batch_size)
+valid_img_generator = image_data_generator.flow(x_val, seed=seed,batch_size=batch_size)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.140187Z","iopub.execute_input":"2023-06-02T02:05:58.141172Z","iopub.status.idle":"2023-06-02T02:05:58.458032Z","shell.execute_reply.started":"2023-06-02T02:05:58.141125Z","shell.execute_reply":"2023-06-02T02:05:58.456818Z"}}
+mask_data_generator = ImageDataGenerator(**mask_data_gen_args)
+mask_data_generator.fit(y_train, augment=True, seed=seed)
+mask_generator = mask_data_generator.flow(y_train, seed=seed,batch_size=batch_size)
+valid_mask_generator = mask_data_generator.flow(y_val, seed=seed,batch_size=batch_size)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.459667Z","iopub.execute_input":"2023-06-02T02:05:58.460774Z","iopub.status.idle":"2023-06-02T02:05:58.468079Z","shell.execute_reply.started":"2023-06-02T02:05:58.460725Z","shell.execute_reply":"2023-06-02T02:05:58.466471Z"}}
+def my_image_mask_generator(image_generator, mask_generator):
+    train_generator = zip(image_generator, mask_generator)
+    for (img, mask) in train_generator:
+        yield (img, mask)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.470362Z","iopub.execute_input":"2023-06-02T02:05:58.470798Z","iopub.status.idle":"2023-06-02T02:05:58.479728Z","shell.execute_reply.started":"2023-06-02T02:05:58.470753Z","shell.execute_reply":"2023-06-02T02:05:58.478393Z"}}
+my_generator = my_image_mask_generator(image_generator, mask_generator)
+
+validation_datagen = my_image_mask_generator(valid_img_generator, valid_mask_generator)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.481887Z","iopub.execute_input":"2023-06-02T02:05:58.482379Z","iopub.status.idle":"2023-06-02T02:05:58.490440Z","shell.execute_reply.started":"2023-06-02T02:05:58.482337Z","shell.execute_reply":"2023-06-02T02:05:58.489000Z"}}
+from keras import backend as K
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.493200Z","iopub.execute_input":"2023-06-02T02:05:58.494038Z","iopub.status.idle":"2023-06-02T02:05:58.502305Z","shell.execute_reply.started":"2023-06-02T02:05:58.493995Z","shell.execute_reply":"2023-06-02T02:05:58.501341Z"}}
+def jaccard_distance_loss(y_true, y_pred, smooth=100):
+    
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    sum_ = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    jac = (intersection + smooth) / (sum_ - intersection + smooth)
+    return (1 - jac) * smooth
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.503782Z","iopub.execute_input":"2023-06-02T02:05:58.505154Z","iopub.status.idle":"2023-06-02T02:05:58.513919Z","shell.execute_reply.started":"2023-06-02T02:05:58.505112Z","shell.execute_reply":"2023-06-02T02:05:58.512831Z"}}
+def dice_metric(y_pred, y_true):
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    union = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    # if y_pred.sum() == 0 and y_pred.sum() == 0:
+    #     return 1.0
+
+    return 2*intersection / union
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.515801Z","iopub.execute_input":"2023-06-02T02:05:58.516222Z","iopub.status.idle":"2023-06-02T02:05:58.525643Z","shell.execute_reply.started":"2023-06-02T02:05:58.516176Z","shell.execute_reply":"2023-06-02T02:05:58.524736Z"}}
+from tensorflow.keras.optimizers import Adam
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:05:58.527637Z","iopub.execute_input":"2023-06-02T02:05:58.528109Z","iopub.status.idle":"2023-06-02T02:06:23.532314Z","shell.execute_reply.started":"2023-06-02T02:05:58.528068Z","shell.execute_reply":"2023-06-02T02:06:23.530907Z"}}
+pip install focal-loss
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:06:23.534532Z","iopub.execute_input":"2023-06-02T02:06:23.535057Z","iopub.status.idle":"2023-06-02T02:06:23.547485Z","shell.execute_reply.started":"2023-06-02T02:06:23.535007Z","shell.execute_reply":"2023-06-02T02:06:23.546348Z"}}
+from focal_loss import BinaryFocalLoss
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:06:23.549181Z","iopub.execute_input":"2023-06-02T02:06:23.549673Z","iopub.status.idle":"2023-06-02T02:06:23.577052Z","shell.execute_reply.started":"2023-06-02T02:06:23.549634Z","shell.execute_reply":"2023-06-02T02:06:23.575696Z"}}
+model.compile(optimizer=Adam(learning_rate=0.01), loss=BinaryFocalLoss(gamma=2), metrics=[dice_metric])
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:33:44.801371Z","iopub.execute_input":"2023-06-02T02:33:44.801829Z"}}
+history = model.fit(my_generator, validation_data=validation_datagen, steps_per_epoch=50, validation_steps=5, epochs=64)
+
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:23:02.316516Z","iopub.execute_input":"2023-06-02T02:23:02.318624Z","iopub.status.idle":"2023-06-02T02:23:02.766422Z","shell.execute_reply.started":"2023-06-02T02:23:02.318581Z","shell.execute_reply":"2023-06-02T02:23:02.765301Z"}}
+model.save_weights("weights_Deeplab(512*512).h5")
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:23:02.767877Z","iopub.execute_input":"2023-06-02T02:23:02.768188Z","iopub.status.idle":"2023-06-02T02:23:03.068859Z","shell.execute_reply.started":"2023-06-02T02:23:02.768153Z","shell.execute_reply":"2023-06-02T02:23:03.067768Z"}}
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = range(1, len(loss) + 1)
+plt.plot(epochs, loss, 'y', label='Training loss')
+plt.plot(epochs, val_loss, 'r', label='Validation loss')
+plt.title('Training and validation loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:23:03.074877Z","iopub.execute_input":"2023-06-02T02:23:03.075234Z","iopub.status.idle":"2023-06-02T02:23:03.333263Z","shell.execute_reply.started":"2023-06-02T02:23:03.075202Z","shell.execute_reply":"2023-06-02T02:23:03.332166Z"}}
+acc = history.history['dice_metric']
+#acc = history.history['accuracy']
+val_acc = history.history['val_dice_metric']
+#val_acc = history.history['val_accuracy']
+
+plt.plot(epochs, acc, 'y', label='Training Dice')
+plt.plot(epochs, val_acc, 'r', label='Validation Dice')
+plt.title('Training and validation Dice')
+plt.xlabel('Epochs')
+plt.ylabel('Dice')
+plt.legend()
+plt.show()
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:32:37.290078Z","iopub.execute_input":"2023-06-02T02:32:37.290502Z","iopub.status.idle":"2023-06-02T02:32:37.692049Z","shell.execute_reply.started":"2023-06-02T02:32:37.290466Z","shell.execute_reply":"2023-06-02T02:32:37.690882Z"}}
+test_img = cv2.imread('/kaggle/input/newmanual/Image/Image_050.tif', cv2.IMREAD_COLOR)       
+test_img = cv2.resize(test_img, (512, 512))
+test_img = cv2.cvtColor(test_img, cv2.COLOR_RGB2BGR)
+plt.imshow(test_img, cmap='gray')
+test_img = np.expand_dims(test_img, axis=0)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:33:15.111076Z","iopub.execute_input":"2023-06-02T02:33:15.111869Z","iopub.status.idle":"2023-06-02T02:33:15.271967Z","shell.execute_reply.started":"2023-06-02T02:33:15.111780Z","shell.execute_reply":"2023-06-02T02:33:15.270864Z"}}
+prediction = (model.predict(test_img)[0,:,:,0] > 0.9).astype(np.uint8)
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-02T02:33:17.130365Z","iopub.execute_input":"2023-06-02T02:33:17.130788Z","iopub.status.idle":"2023-06-02T02:33:17.399237Z","shell.execute_reply.started":"2023-06-02T02:33:17.130735Z","shell.execute_reply":"2023-06-02T02:33:17.398163Z"}}
+prediction_image = prediction.reshape(512,512)
+plt.imshow(prediction_image, cmap='gray')
+
+# %% [code]
+
+
+# %% [code]
