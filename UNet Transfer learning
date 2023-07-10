@@ -1,0 +1,42 @@
+
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:31:53.943701Z","iopub.execute_input":"2023-06-12T01:31:53.944059Z","iopub.status.idle":"2023-06-12T01:32:08.734572Z","shell.execute_reply.started":"2023-06-12T01:31:53.943982Z","shell.execute_reply":"2023-06-12T01:32:08.733269Z"}}
+pip install segmentation_models
+​
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:32:08.737967Z","iopub.execute_input":"2023-06-12T01:32:08.738393Z","iopub.status.idle":"2023-06-12T01:32:15.715499Z","shell.execute_reply.started":"2023-06-12T01:32:08.738350Z","shell.execute_reply":"2023-06-12T01:32:15.714399Z"}}
+import tensorflow as tf
+import tensorflow
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.optimizers import *
+import segmentation_models as sm
+from tensorflow import keras
+sm.set_framework('tf.keras')
+sm.framework()
+BACKBONE = 'resnet34'
+preprocess_input = sm.get_preprocessing(BACKBONE)
+%matplotlib inline
+​
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:32:15.718034Z","iopub.execute_input":"2023-06-12T01:32:15.719854Z","iopub.status.idle":"2023-06-12T01:32:15.725028Z","shell.execute_reply.started":"2023-06-12T01:32:15.719811Z","shell.execute_reply":"2023-06-12T01:32:15.723736Z"}}
+from keras import backend as K
+​
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:32:15.726487Z","iopub.execute_input":"2023-06-12T01:32:15.727154Z","iopub.status.idle":"2023-06-12T01:32:15.741000Z","shell.execute_reply.started":"2023-06-12T01:32:15.727111Z","shell.execute_reply":"2023-06-12T01:32:15.739875Z"}}
+def jaccard_distance_loss(y_true, y_pred, smooth=100):
+    
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    sum_ = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    jac = (intersection + smooth) / (sum_ - intersection + smooth)
+    return (1 - jac) * smooth
+​
+​
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:32:15.745934Z","iopub.execute_input":"2023-06-12T01:32:15.746833Z","iopub.status.idle":"2023-06-12T01:32:15.753852Z","shell.execute_reply.started":"2023-06-12T01:32:15.746803Z","shell.execute_reply":"2023-06-12T01:32:15.752725Z"}}
+def dice_metric(y_pred, y_true):
+    intersection = K.sum(K.sum(K.abs(y_true * y_pred), axis=-1))
+    union = K.sum(K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1))
+    # if y_pred.sum() == 0 and y_pred.sum() == 0:
+    #     return 1.0
+​
+    return 2*intersection / union
+​
+# %% [code] {"execution":{"iopub.status.busy":"2023-06-12T01:32:15.755406Z","iopub.execute_input":"2023-06-12T01:32:15.755758Z","iopub.status.idle":"2023-06-12T01:32:23.301137Z","shell.execute_reply.started":"2023-06-12T01:32:15.755722Z","shell.execute_reply":"2023-06-12T01:32:23.300141Z"}}
+model = sm.Unet(BACKBONE, encoder_weights='imagenet')
+model = sm.Unet()
